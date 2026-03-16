@@ -1,2 +1,34 @@
-# AI-Visual-Product-Reviewer
-AI Visual Product Reviewer is a multimodal AI web app that analyzes products directly from images. Users upload a product image and receive AI-generated insights including product summaries, review highlights, and alternative suggestions, powered by Amazon Bedrock and Amazon Nova Pro.
+# AI Visual Product Reviewer
+
+AI-powered system that analyzes product images and generates buying insights.
+
+## Features
+- Upload product image
+- AI identifies the product
+- AI analyzes reviews
+- AI compares similar products
+- AI gives final buying recommendation
+
+## Tech Stack
+
+Frontend:
+React + CSS
+
+Backend:
+Python
+
+AI:
+Amazon Bedrock
+Amazon Nova Pro
+
+## How it works
+
+User uploads image
+↓
+AI identifies product
+↓
+AI gathers reviews
+↓
+AI compares alternatives
+↓
+AI generates recommendation
