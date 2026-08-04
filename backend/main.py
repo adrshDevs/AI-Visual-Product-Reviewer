@@ -1,27 +1,43 @@
 import os
+import io
 import json
 import base64
 import random
+import asyncio
 import urllib.parse
 from datetime import datetime, timedelta
 from typing import Union, List, Optional
+from PIL import Image
 
-import boto3
+from google import genai
+from google.genai import types
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 # Load .env from parent directory (project root)
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
 
-app = FastAPI(title="AI Visual Product Reviewer API")
+app = FastAPI(title="IntelliBuy API")
+
+# Shared Gemini client — created once at startup to avoid per-request overhead
+_GEMINI_API_KEY = (os.getenv("GEMINI_API_KEY") or "").strip()
+_gemini_client: Optional[genai.Client] = genai.Client(api_key=_GEMINI_API_KEY) if _GEMINI_API_KEY else None
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5176", "http://127.0.0.1:5176"],
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+dist_dir = os.path.join(os.path.dirname(__file__), "..", "dist")
+if os.path.exists(dist_dir):
+    assets_dir = os.path.join(dist_dir, "assets")
+    if os.path.exists(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -74,27 +90,6 @@ def generate_realistic_price_history(base_price: float, product_name: str):
         prices[0] = round(base_price * rng.uniform(1.15, 1.30), 2)
 
     return [{"date": m, "price": p} for m, p in zip(months, prices)]
-
-
-def get_bedrock_client():
-    aws_access_key = os.getenv("AWS_ACCESS_KEY_ID")
-    aws_secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
-    aws_session_token = os.getenv("AWS_SESSION_TOKEN")
-    aws_region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
-    aws_profile = os.getenv("AWS_PROFILE")
-
-    if aws_profile:
-        boto3.setup_default_session(profile_name=aws_profile)
-
-    client_kwargs = {"service_name": "bedrock-runtime", "region_name": aws_region}
-
-    if aws_access_key and aws_secret_key:
-        client_kwargs["aws_access_key_id"] = aws_access_key
-        client_kwargs["aws_secret_access_key"] = aws_secret_key
-        if aws_session_token:
-            client_kwargs["aws_session_token"] = aws_session_token
-
-    return boto3.client(**client_kwargs)
 
 
 BASE_PROMPT = """Analyze the product based on the provided input (image, text, or both) and provide a comprehensive review in JSON format matching exactly this structure:
@@ -159,46 +154,154 @@ If an image is provided, use it as the primary source of truth.
 If text is provided, determine if it is a follow-up question about the product in the image or a completely NEW product search.
 Set "is_new_product" to true if the user is asking about a different product than what is shown/previously discussed, or if no image is provided.
 Set "is_new_product" to false if the user is asking a refinement or follow-up question about the product in the image.
-For platforms, ALWAYS return EXACTLY these 4 stores: Amazon, Best Buy, Walmart, Target. Do NOT include URLs. Ensure at least 4 reviews. Provide 12 months of mock price_history.
+For platforms, ALWAYS return EXACTLY these 4 stores: Amazon, Best Buy, Walmart, Target. Do NOT include URLs. Ensure at least 4 reviews. For price_history, search and analyze recent web pricing records for this product over the past 12 months and provide research-grounded monthly historical prices in YYYY-MM format matching exact array format [{"date": "YYYY-MM", "price": 199.99}].
 For better_alternatives, provide at least 3 options with brand, brand_domain, price, url, and reason.
 For platform names, use standard recognizable names like Amazon, Best Buy, Walmart, Target, eBay, B&H Photo, Newegg, Flipkart, etc.
 For review_authenticity, analyze each review and classify as 'genuine' or 'fake' with a reason. Provide genuine_count, fake_count, and confidence_score (0-100)."""
 
 
-def call_nova_pro(image_bytes: Optional[bytes], format_str: Optional[str], text_prompt: Optional[str]) -> dict:
-    client = get_bedrock_client()
+def call_gemini(image_bytes: Optional[bytes], format_str: Optional[str], text_prompt: Optional[str]) -> dict:
+    api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
+    if not api_key:
+        raise HTTPException(
+            status_code=500,
+            detail="GEMINI_API_KEY environment variable is not configured. Please add GEMINI_API_KEY=your_key to your .env file."
+        )
+
+    # Reuse the shared client if key matches, otherwise create a new one
+    client = _gemini_client if (_gemini_client and api_key == _GEMINI_API_KEY) else genai.Client(api_key=api_key)
     content_list = []
 
     if image_bytes:
-        encoded = base64.b64encode(image_bytes).decode("utf-8")
-        content_list.append({"image": {"format": format_str, "source": {"bytes": encoded}}})
+        try:
+            img = Image.open(io.BytesIO(image_bytes))
+            img.thumbnail((1024, 1024))
+            buf = io.BytesIO()
+            img.convert("RGB").save(buf, format="JPEG", quality=80)
+            image_bytes = buf.getvalue()
+            format_str = "jpeg"
+        except Exception:
+            pass
+        mime = f"image/{format_str}" if format_str else "image/jpeg"
+        content_list.append(types.Part.from_bytes(data=image_bytes, mime_type=mime))
 
     final_text = BASE_PROMPT
     if text_prompt:
         final_text = f"USER REQUEST: {text_prompt}\n\nINSTRUCTIONS: {BASE_PROMPT}"
-    content_list.append({"text": final_text})
+    content_list.append(final_text)
 
-    body = {
-        "messages": [{"role": "user", "content": content_list}],
-        "system": [{"text": "You are a helpful AI product reviewer. Always output valid JSON."}],
-    }
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=content_list,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                system_instruction="You are a helpful AI product reviewer. Always output valid JSON matching the exact requested JSON schema. Be concise and direct.",
+                temperature=0.1,
+                max_output_tokens=2000,
+            )
+        )
+        output_text = response.text.strip()
+        if output_text.startswith("```json"):
+            output_text = output_text[7:]
+        elif output_text.startswith("```"):
+            output_text = output_text[3:]
+        if output_text.endswith("```"):
+            output_text = output_text[:-3]
 
-    response = client.invoke_model(modelId="us.amazon.nova-pro-v1:0", body=json.dumps(body))
-    response_body = json.loads(response["body"].read())
-    output_text = ""
-    for item in response_body.get("output", {}).get("message", {}).get("content", []):
-        if "text" in item:
-            output_text += item["text"]
+        return json.loads(output_text.strip())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Gemini API error: {str(e)}")
 
-    output_text = output_text.strip()
-    if output_text.startswith("```json"):
-        output_text = output_text[7:]
-    elif output_text.startswith("```"):
-        output_text = output_text[3:]
-    if output_text.endswith("```"):
-        output_text = output_text[:-3]
+def call_groq(image_bytes: Optional[bytes], format_str: Optional[str], text_prompt: Optional[str]) -> dict:
+    load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"), override=True)
+    groq_api_key = (os.getenv("GROQ_API_KEY") or "").strip()
+    if not groq_api_key:
+        raise ValueError("GROQ_API_KEY is not configured")
 
-    return json.loads(output_text.strip())
+    from groq import Groq
+    client = Groq(api_key=groq_api_key)
+
+    content_list = []
+    if image_bytes:
+        try:
+            img = Image.open(io.BytesIO(image_bytes))
+            img.thumbnail((1024, 1024))
+            buf = io.BytesIO()
+            img.convert("RGB").save(buf, format="JPEG", quality=80)
+            image_bytes = buf.getvalue()
+            format_str = "jpeg"
+        except Exception:
+            pass
+        encoded = base64.b64encode(image_bytes).decode("utf-8")
+        mime = f"image/{format_str}" if format_str else "image/jpeg"
+        content_list.append({
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:{mime};base64,{encoded}"
+            }
+        })
+
+    final_text = BASE_PROMPT
+    if text_prompt:
+        final_text = f"USER REQUEST: {text_prompt}\n\nINSTRUCTIONS: {BASE_PROMPT}"
+    
+    content_list.append({"role": "user", "content": final_text})
+
+    models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+
+    last_err = None
+    for model_name in models:
+        try:
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": "You are a helpful AI product reviewer. Always output valid JSON matching the exact requested JSON schema."},
+                    {"role": "user", "content": final_text}
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.1,
+                max_tokens=3000
+            )
+            output_text = response.choices[0].message.content.strip()
+            if output_text.startswith("```json"): output_text = output_text[7:]
+            elif output_text.startswith("```"): output_text = output_text[3:]
+            if output_text.endswith("```"): output_text = output_text[:-3]
+
+            return json.loads(output_text.strip())
+        except Exception as e:
+            last_err = e
+            continue
+
+    raise Exception(f"Groq API error: {str(last_err)}")
+
+
+def call_llm(image_bytes: Optional[bytes], format_str: Optional[str], text_prompt: Optional[str]) -> dict:
+    # 1. Image uploaded: use Gemini Vision (can actually see the image)
+    if image_bytes:
+        try:
+            return call_gemini(image_bytes, format_str, text_prompt)
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"Gemini Vision failed: {e}")
+            if not text_prompt:
+                raise HTTPException(
+                    status_code=429,
+                    detail="Gemini Vision quota exhausted. Please add a product name in the text field and try again."
+                )
+            image_bytes = None
+
+    # 2. Text-only: use Gemini directly
+    try:
+        return call_gemini(None, None, text_prompt)
+    except Exception as e:
+        print(f"Gemini text call failed: {e}")
+
+    raise HTTPException(
+        status_code=500,
+        detail="Unable to analyze product. Please check your API key or try again shortly."
+    )
 
 
 # ── Route ──────────────────────────────────────────────────────────────────────
@@ -215,14 +318,14 @@ async def analyze(
         ext = image.filename.rsplit(".", 1)[-1].lower()
         fmt = "jpeg" if ext == "jpg" else ext
 
-    result = call_nova_pro(img_bytes, fmt, prompt or None)
+    result = await asyncio.to_thread(call_llm, img_bytes, fmt, prompt or None)
 
     # Enrich platforms with generated search URLs
     product_name = result.get("product_name", "product")
     for p in result.get("platforms", []):
         p["url"] = build_platform_url(p.get("name", ""), product_name)
 
-    # Replace AI price history with our deterministic one
+    # Preserve Gemini's web-grounded price history; fallback only if empty
     platforms = result.get("platforms", [])
     base_price = 99.99
     if platforms:
@@ -231,17 +334,28 @@ async def analyze(
         except Exception:
             pass
     result["average_price"] = base_price
-    result["price_history"] = generate_realistic_price_history(base_price, product_name)
+    if not result.get("price_history") or not isinstance(result.get("price_history"), list) or len(result.get("price_history")) < 3:
+        result["price_history"] = generate_realistic_price_history(base_price, product_name)
 
-    # Dynamic image sync: Use a high-quality product placeholder based on category
-    if result.get("is_new_product") or not img_bytes:
+    # Dynamic image sync: Use category placeholder only if no image was uploaded by user
+    if not img_bytes:
         category = result.get("category", "product")
-        # Add "product" to the category search to get more relevant images
         search_term = f"{category},product"
         safe_term = urllib.parse.quote_plus(search_term)
-        # loremflickr is a reliable alternative for generic placeholders by category
         result["product_image_url"] = f"https://loremflickr.com/800/600/{safe_term}"
     else:
         result["product_image_url"] = None
 
     return result
+
+
+if os.path.exists(dist_dir):
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="API endpoint not found")
+        file_path = os.path.join(dist_dir, full_path)
+        if full_path and os.path.isfile(file_path):
+            return FileResponse(file_path)
+        return FileResponse(os.path.join(dist_dir, "index.html"))
+

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Upload,
@@ -76,50 +76,19 @@ const App = () => {
   const [prompt, setPrompt] = useState('');
   const [query, setQuery] = useState('');
   const [showSearchBar, setShowSearchBar] = useState(true);
-  const [typedText, setTypedText] = useState('');
+  const contentScrollRef = useRef(null);
 
   useEffect(() => {
     if (result) {
       document.body.classList.add('no-scroll');
+      // Scroll results pane to top so user sees AI Insight immediately
+      if (contentScrollRef.current) {
+        contentScrollRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+      }
     } else {
       document.body.classList.remove('no-scroll');
     }
   }, [result]);
-
-  useEffect(() => {
-    const text = 'Amazon Nova Pro';
-    let index = 0;
-    let deleting = false;
-    let timeoutId;
-
-    const tick = () => {
-      setTypedText(text.slice(0, index));
-
-      const atBoundary = index === 0 || index === text.length;
-      const delay = atBoundary ? 400 : 70;
-
-      if (!deleting) {
-        if (index === text.length) {
-          deleting = true;
-          timeoutId = window.setTimeout(tick, delay);
-          return;
-        }
-        index += 1;
-      } else {
-        if (index === 0) {
-          deleting = false;
-          timeoutId = window.setTimeout(tick, delay);
-          return;
-        }
-        index -= 1;
-      }
-
-      timeoutId = window.setTimeout(tick, delay);
-    };
-
-    tick();
-    return () => window.clearTimeout(timeoutId);
-  }, []);
 
   const handleImageChange = (e) => {
     const file = e.target.files[0];
@@ -171,22 +140,29 @@ const App = () => {
         method: 'POST',
         body: formData,
       });
+      const contentType = response.headers.get('content-type') || '';
+      if (!response.ok) {
+        let errMessage = 'Analysis failed. Please try again.';
+        if (contentType.includes('application/json')) {
+          const errData = await response.json();
+          errMessage = errData.detail || errMessage;
+        } else {
+          const errText = await response.text();
+          errMessage = errText || errMessage;
+        }
+        alert(errMessage);
+        return;
+      }
       const data = await response.json();
       setResult(data);
 
-      // Dynamic Context Sync: If AI identifies a new product search
-      if (data.is_new_product) {
-        setImage(null); // Clear the uploaded file state
-        if (data.product_image_url) {
-          setImagePreview(data.product_image_url);
-        }
-      } else if (!image && data.product_image_url) {
-        // Just a refinement, keep existing image if any, otherwise use placeholder
+      // Keep user's uploaded image preview intact; only set imagePreview from backend if no user image exists
+      if (!imagePreview && data.product_image_url) {
         setImagePreview(data.product_image_url);
       }
     } catch (error) {
       console.error('Error:', error);
-      alert('Analysis failed. Please check backend connection.');
+      alert(error.message || 'Analysis failed. Please check backend connection.');
     } finally {
       setLoading(false);
     }
@@ -200,12 +176,7 @@ const App = () => {
             <div style={{ background: 'var(--accent-color)', width: '36px', height: '36px', borderRadius: '10px', display: 'flex', alignItems: 'center', justifySelf: 'center', justifyContent: 'center' }}>
               <ShoppingBag size={20} color="white" />
             </div>
-            <h2 style={{ fontSize: '1.4rem', fontWeight: 700, letterSpacing: '-0.04em' }}>AI Product Reviewer</h2>
-          </div>
-          <div style={{ display: 'flex', gap: '40px', fontSize: '0.95rem', fontWeight: 500, color: 'var(--text-secondary)' }}>
-            <span style={{ cursor: 'pointer', transition: 'color 0.2s' }} onMouseEnter={e => e.target.style.color = 'var(--text-primary)'} onMouseLeave={e => e.target.style.color = 'var(--text-secondary)'}>Discover</span>
-            <span style={{ cursor: 'pointer', transition: 'color 0.2s' }} onMouseEnter={e => e.target.style.color = 'var(--text-primary)'} onMouseLeave={e => e.target.style.color = 'var(--text-secondary)'}>Trends</span>
-            <span style={{ cursor: 'pointer', transition: 'color 0.2s' }} onMouseEnter={e => e.target.style.color = 'var(--text-primary)'} onMouseLeave={e => e.target.style.color = 'var(--text-secondary)'}>Support</span>
+            <h2 style={{ fontSize: '1.4rem', fontWeight: 700, letterSpacing: '-0.04em' }}>IntelliBuy</h2>
           </div>
         </header>
       )}
@@ -236,7 +207,7 @@ const App = () => {
                   Intelligence<br />for what you buy.
                 </h1>
                 <p style={{ fontSize: '1.5rem', color: 'var(--text-secondary)', marginBottom: '60px', maxWidth: '750px', margin: '0 auto 60px auto', lineHeight: 1.4 }}>
-                  Pro-grade product analysis powered by <span style={{color: 'var(--accent-color)'}}>{typedText}<motion.span animate={{opacity: [1,0]}} transition={{repeat: Infinity, duration: 0.5}}>|</motion.span></span> <br />Upload an image or describe your query to begin.
+                  Pro-grade product analysis.<br />Upload an image or describe your query to begin.
                 </p>
 
                 <div className="card" style={{ padding: '0', maxWidth: '1000px', margin: '0 auto', overflow: 'hidden', background: 'linear-gradient(145deg, rgba(32, 32, 34, 0.6) 0%, rgba(18, 18, 18, 0.6) 100%)', borderRadius: '28px' }}>
@@ -424,7 +395,7 @@ const App = () => {
               </div>
 
               <div className="results-content">
-                <div className="content-scroll-area">
+                <div className="content-scroll-area" ref={contentScrollRef}>
                   {/* AI Insight Highlight */}
                   <div className="card" style={{
                     background: 'linear-gradient(135deg, rgba(41, 151, 255, 0.15) 0%, rgba(28, 28, 30, 0.4) 100%)',
@@ -923,14 +894,14 @@ const App = () => {
                 <div style={{ background: 'var(--accent-color)', width: '32px', height: '32px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   <ShoppingBag size={18} color="white" />
                 </div>
-                <h3 style={{ color: 'white', fontSize: '1.4rem' }}>AI Product Reviewer</h3>
+                <h3 style={{ color: 'white', fontSize: '1.4rem' }}>IntelliBuy</h3>
               </div>
               <p style={{ lineHeight: 1.6 }}>Sophisticated AI-driven analysis for the modern consumer. Precision, integrity, and depth.</p>
             </div>
             <div style={{ display: 'flex', gap: '80px' }}>
               <div>
                 <b style={{ color: 'white', display: 'block', marginBottom: '20px', fontSize: '1.1rem' }}>Intelligence</b>
-                <p style={{ marginBottom: '12px' }}>Nova Pro AI</p>
+                <p style={{ marginBottom: '12px' }}>Google Gemini AI</p>
                 <p style={{ marginBottom: '12px' }}>Market Logic</p>
                 <p style={{ marginBottom: '12px' }}>Integrity Check</p>
               </div>

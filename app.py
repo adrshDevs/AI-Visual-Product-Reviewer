@@ -1,5 +1,4 @@
 import streamlit as st
-import boto3
 import json
 import plotly.express as px
 import pandas as pd
@@ -69,7 +68,7 @@ def build_platform_url(platform_name, product_name):
     return f"https://www.google.com/search?q={q}+buy+site:{platform_name.lower().replace(' ', '')}.com"
 
 # Setup page
-st.set_page_config(page_title="AI Visual Product Reviewer", page_icon="🛍️", layout="wide")
+st.set_page_config(page_title="IntelliBuy", page_icon="🛍️", layout="wide")
 
 # Initialize session state
 if "analysis_result" not in st.session_state:
@@ -78,8 +77,12 @@ if "last_queried" not in st.session_state:
     st.session_state.last_queried = None
 if "uploaded_image" not in st.session_state:
     st.session_state.uploaded_image = None
+if "prompt_input" not in st.session_state:
+    st.session_state.prompt_input = ""
+if "scroll_to_top" not in st.session_state:
+    st.session_state.scroll_to_top = False
 
-st.title("🛍️ AI Visual Product Reviewer")
+st.title("🛍️ IntelliBuy")
 st.markdown("Search for a product via text, ask questions, or upload an image for a deep-dive AI review.")
 
 # Custom CSS for a more premium look
@@ -148,44 +151,25 @@ def get_platform_logo(name):
     
     return f'<img src="{logo_url}" width="20" style="vertical-align: middle; margin-right: 8px; border-radius: 4px;">'
 
-def get_bedrock_client():
-    aws_access_key = os.getenv("AWS_ACCESS_KEY_ID")
-    aws_secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
-    aws_session_token = os.getenv("AWS_SESSION_TOKEN")
-    aws_region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
-    aws_profile = os.getenv("AWS_PROFILE")
-    
+def call_gemini(image_bytes=None, format_str=None, text_prompt=None):
+    load_dotenv(override=True)
+    api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
+    if not api_key:
+        st.error("GEMINI_API_KEY environment variable is missing. Please set GEMINI_API_KEY in your .env file.")
+        return None
+
     try:
-        # If a specific profile is requested, set up the default session for it.
-        # Otherwise, Boto3 will automatically use the default provider chain
-        # (environment variables, ~/.aws/credentials, IAM roles, etc.)
-        if aws_profile:
-            boto3.setup_default_session(profile_name=aws_profile)
+        from google import genai
+        from google.genai import types
 
-        client_kwargs = {
-            'service_name': 'bedrock-runtime', 
-            'region_name': aws_region,
-        }
-        
-        # Explicit keys override the provider chain if present
-        if aws_access_key and aws_secret_key:
-            client_kwargs['aws_access_key_id'] = aws_access_key
-            client_kwargs['aws_secret_access_key'] = aws_secret_key
-            if aws_session_token:
-                client_kwargs['aws_session_token'] = aws_session_token
-            
-        return boto3.client(**client_kwargs)
-    except Exception as e:
-        st.error(f"Failed to create Bedrock client. Ensure your AWS credentials are correct: {e}")
-        return None
+        client = genai.Client(api_key=api_key)
+        content_list = []
 
-def call_nova_pro(image_bytes=None, format_str=None, text_prompt=None):
-    client = get_bedrock_client()
-    if not client:
-        return None
-    
-    # Base prompt for the structured data
-    base_prompt = """Analyze the product based on the provided input (image, text, or both) and provide a comprehensive review in JSON format matching exactly this structure:
+        if image_bytes:
+            mime = f"image/{format_str}" if format_str else "image/jpeg"
+            content_list.append(types.Part.from_bytes(data=image_bytes, mime_type=mime))
+
+        base_prompt = """Analyze the product based on the provided input (image, text, or both) and provide a comprehensive review in JSON format matching exactly this structure:
 {
     "product_name": "Name of the product",
     "category": "Product category",
@@ -230,7 +214,7 @@ def call_nova_pro(image_bytes=None, format_str=None, text_prompt=None):
         "genuine_count": 3,
         "fake_count": 1,
         "confidence_score": 75,
-        "summary": "Most reviews appear genuine; one review shows signs of being fabricated (overly generic, no specifics).",
+        "summary": "Most reviews appear genuine; one review shows signs of being fabricated.",
         "per_review": [
             {"user": "User1", "verdict": "genuine", "reason": "Specific product details mentioned, balanced tone."},
             {"user": "User2", "verdict": "fake", "reason": "Overly promotional, no critical feedback, suspiciously short."}
@@ -238,75 +222,51 @@ def call_nova_pro(image_bytes=None, format_str=None, text_prompt=None):
     }
 }
 
-Return ONLY valid JSON. 
-If an image is provided, use it as the primary source of truth. 
+Return ONLY valid JSON.
+If an image is provided, use it as the primary source of truth.
 If text is provided, use it to refine the search or answer specific user questions.
 If ONLY text is provided, perform a product search for that item.
-For platforms, ALWAYS return EXACTLY these 4 stores with realistic prices for the identified product: Amazon, Best Buy, Walmart, Target. Do NOT include URLs, we will generate them ourselves. Ensure at least 4 reviews. Provide 12 months of mock price_history.
+For platforms, ALWAYS return EXACTLY these 4 stores with realistic prices for the identified product: Amazon, Best Buy, Walmart, Target. Do NOT include URLs. Ensure at least 4 reviews. For price_history, search and analyze recent web pricing records for this product over the past 12 months and provide research-grounded monthly historical prices in YYYY-MM format matching exact array format [{"date": "YYYY-MM", "price": 199.99}].
 For better_alternatives, provide at least 3 options with brand, brand_domain, price, url, and reason.
 For platform names, use standard recognizable names like Amazon, Best Buy, Walmart, Target, eBay, B&H Photo, Newegg, Flipkart, etc.
-For review_authenticity, analyze each review in the reviews array and classify each as 'genuine' or 'fake' with a reason. Provide genuine_count, fake_count, and a confidence_score (0-100) representing percentage of genuine reviews."""
+For review_authenticity, analyze each review in the reviews array and classify each as 'genuine' or 'fake' with a reason."""
 
-    # Construct messages content
-    content_list = []
-    
-    # Add image if present
-    if image_bytes:
-        import base64
-        encoded_image = base64.b64encode(image_bytes).decode("utf-8")
-        content_list.append({
-            "image": {
-                "format": format_str,
-                "source": {"bytes": encoded_image}
-            }
-        })
-    
-    # Add text prompt (or base instructions if text_prompt is missing)
-    final_text = base_prompt
-    if text_prompt:
-        final_text = f"USER REQUEST: {text_prompt}\n\nINSTUCTIONS: {base_prompt}"
-    content_list.append({"text": final_text})
+        final_text = base_prompt
+        if text_prompt:
+            final_text = f"USER REQUEST: {text_prompt}\n\nINSTRUCTIONS: {base_prompt}"
+        content_list.append(final_text)
 
-    body = {
-        "messages": [
-            {
-                "role": "user",
-                "content": content_list
-            }
-        ],
-        "system": [{"text": "You are a helpful AI product reviewer. Always output valid JSON."}]
-    }
+        models = ["gemini-flash-latest"]
+        last_err = None
 
-    try:
-        response = client.invoke_model(
-            modelId="us.amazon.nova-pro-v1:0",
-            body=json.dumps(body)
-        )
-        response_body = json.loads(response.get('body').read())
-        output_message = response_body.get("output", {}).get("message", {})
-        content = output_message.get("content", [])
-        
-        text = ""
-        for item in content:
-            if "text" in item:
-                text += item["text"]
-                
-        text = text.strip()
-        if text.startswith("```json"): text = text[7:]
-        elif text.startswith("```"): text = text[3:]
-        if text.endswith("```"): text = text[:-3]
-            
-        return json.loads(text.strip())
-        
-    except Exception as e:
-        st.error(f"Error communicating with Bedrock: {e}")
-        return None
+        for model in models:
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=content_list,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        system_instruction="You are a helpful AI product reviewer. Always output valid JSON. Be concise.",
+                        temperature=0.1,
+                        max_output_tokens=3000,
+                    )
+                )
+                text = response.text.strip()
+                if text.startswith("```json"): text = text[7:]
+                elif text.startswith("```"): text = text[3:]
+                if text.endswith("```"): text = text[:-3]
+                return json.loads(text.strip())
+            except Exception as e:
+                last_err = e
+                continue
+
+def call_llm(image_bytes=None, format_str=None, text_prompt=None):
+    return call_gemini(image_bytes, format_str, text_prompt)
 
 # --- Product Input Section ---
 with st.container():
     st.subheader("🖼️ Product Analysis & Search")
-    
-    # Image Analyzer on Top
+
     col_u1, col_u2 = st.columns([4, 1])
     with col_u1:
         standalone_file = st.file_uploader("Upload or drop a product image here", type=["jpg", "jpeg", "png", "webp"], key="standalone_u")
@@ -314,19 +274,17 @@ with st.container():
             st.session_state.uploaded_image = standalone_file.getvalue()
         else:
             st.session_state.uploaded_image = None
-            
+
     with col_u2:
         if st.session_state.uploaded_image:
             st.image(st.session_state.uploaded_image, width=100)
-    
-    # Interactive Prompt below Image
+
     with st.expander("✨ Want to know something specific about this product?", expanded=True):
-        prompt_text = st.text_area("Ask anything (e.g., 'Is this durable?', 'What's the battery life?', or just type a product name)", placeholder="Type your specific questions or product search terms here...", height=100)
-    
-    # Unified Action Button
+        prompt_text = st.text_area("Ask anything (e.g., 'Is this durable?', 'What's the battery life?', or just type a product name)", placeholder="Type your specific questions or product search terms here...", height=100, key="prompt_input")
+
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("🚀 Analyze & Search Product", type="primary", use_container_width=True):
-        if standalone_file or prompt_text:
+        if standalone_file or st.session_state.prompt_input:
             with st.spinner("Analyzing and searching for details..."):
                 img_bytes = None
                 fmt = None
@@ -334,14 +292,28 @@ with st.container():
                     img_bytes = standalone_file.getvalue()
                     fmt = standalone_file.name.split('.')[-1].lower()
                     if fmt == 'jpg': fmt = 'jpeg'
-                
-                st.session_state.analysis_result = call_nova_pro(img_bytes, fmt, prompt_text)
-                st.session_state.last_queried = prompt_text if prompt_text else f"Image: {standalone_file.name}"
+
+                current_prompt = st.session_state.prompt_input
+                st.session_state.analysis_result = call_llm(img_bytes, fmt, current_prompt)
+                st.session_state.last_queried = current_prompt if current_prompt else f"Image: {standalone_file.name}"
+                # Clear search bar and flag scroll to top
+                st.session_state.prompt_input = ""
+                st.session_state.scroll_to_top = True
+                st.rerun()
         else:
             st.warning("Please upload an image or enter a text query to proceed.")
     
 
 
+
+# --- Scroll to top after new result ---
+if st.session_state.scroll_to_top:
+    st.session_state.scroll_to_top = False
+    import streamlit.components.v1 as components
+    components.html(
+        "<script>window.parent.document.querySelector('section.main').scrollTo({top: 0, behavior: 'smooth'});</script>",
+        height=0,
+    )
 
 # --- Display Results Section ---
 if st.session_state.analysis_result:
