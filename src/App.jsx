@@ -135,26 +135,34 @@ const App = () => {
     if (image) formData.append('image', image);
     if (activePrompt) formData.append('prompt', activePrompt);
 
-    try {
-      const response = await fetch('/api/analyze', {
-        method: 'POST',
-        body: formData,
-      });
-      const contentType = response.headers.get('content-type') || '';
-      if (!response.ok) {
-        let errMessage = 'Analysis failed. Please try again.';
-        if (contentType.includes('application/json')) {
-          const errData = await response.json();
-          errMessage = errData.detail || errMessage;
-        } else {
-          const errText = await response.text();
-          errMessage = errText || errMessage;
-        }
-        alert(errMessage);
-        return;
-      }
-      const data = await response.json();
-      setResult(data);
+    const API_URL = import.meta.env.VITE_API_URL;
+
+try {
+  const response = await fetch(`${API_URL}/api/analyze`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  const contentType = response.headers.get('content-type') || '';
+
+  if (!response.ok) {
+    let errMessage = 'Analysis failed. Please try again.';
+
+    if (contentType.includes('application/json')) {
+      const errData = await response.json();
+      errMessage = errData.detail || errMessage;
+    } else {
+      const errText = await response.text();
+      errMessage = errText || errMessage;
+    }
+
+    alert(errMessage);
+    return;
+  }
+
+  const data = await response.json();
+  setResult(data);
+
 
       // Keep user's uploaded image preview intact; only set imagePreview from backend if no user image exists
       if (!imagePreview && data.product_image_url) {
