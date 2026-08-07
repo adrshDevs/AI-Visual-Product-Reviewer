@@ -192,7 +192,7 @@ def call_gemini(image_bytes: Optional[bytes], format_str: Optional[str], text_pr
 
     try:
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-3.5-flash",
             contents=content_list,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
