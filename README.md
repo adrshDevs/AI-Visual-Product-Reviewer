@@ -1,16 +1,6 @@
 # IntelliBuy
 
-<img width="1562" height="786" alt="image" src="https://github.com/user-attachments/assets/bf2f6117-e9d6-46e4-b1b1-bc4e7cb9a0b9" />
-
-<img width="1562" height="829" alt="image" src="https://github.com/user-attachments/assets/1d00ac13-6cdb-4793-b742-26e6c1a6ea6d" />
-
-<img width="1557" height="834" alt="image" src="https://github.com/user-attachments/assets/7866e4f8-f01b-4ed3-846b-5e99d2e12bf2" />
-
-<img width="1565" height="831" alt="image" src="https://github.com/user-attachments/assets/4b694442-2d6a-454e-8667-3b1deb0fc789" />
-
-<img width="1562" height="830" alt="image" src="https://github.com/user-attachments/assets/77cde45e-ac41-4179-9960-a759c0ca70f9" />
-
-
+assets/hero.png
 ---
 
 ## Table of contents
