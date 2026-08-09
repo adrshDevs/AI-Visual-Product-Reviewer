@@ -23,8 +23,7 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
 app = FastAPI(title="IntelliBuy API")
 
 # Shared Gemini client — created once at startup to avoid per-request overhead
-_GEMINI_API_KEY = (os.getenv("GEMINI_API_KEY") or "").strip()
-_gemini_client: Optional[genai.Client] = genai.Client(api_key=_GEMINI_API_KEY) if _GEMINI_API_KEY else None
+_gemini_client = None
 
 app.add_middleware(
     CORSMiddleware,
@@ -161,15 +160,21 @@ For review_authenticity, analyze each review and classify as 'genuine' or 'fake'
 
 
 def call_gemini(image_bytes: Optional[bytes], format_str: Optional[str], text_prompt: Optional[str]) -> dict:
+    load_dotenv(
+        dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"),
+        override=True
+    )
+
     api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
+
     if not api_key:
         raise HTTPException(
             status_code=500,
-            detail="GEMINI_API_KEY environment variable is not configured. Please add GEMINI_API_KEY=your_key to your .env file."
+            detail="GEMINI_API_KEY environment variable is not configured."
         )
 
+    client = genai.Client(api_key=api_key)
     # Reuse the shared client if key matches, otherwise create a new one
-    client = _gemini_client if (_gemini_client and api_key == _GEMINI_API_KEY) else genai.Client(api_key=api_key)
     content_list = []
 
     if image_bytes:
@@ -191,6 +196,9 @@ def call_gemini(image_bytes: Optional[bytes], format_str: Optional[str], text_pr
     content_list.append(final_text)
 
     try:
+        print("GEMINI KEY LENGTH:", len(api_key))
+        print("GEMINI KEY PREFIX:", api_key[:8])
+        print("GEMINI KEY SUFFIX:", api_key[-4:])
         response = client.models.generate_content(
             model="gemini-3.5-flash",
             contents=content_list,
@@ -198,7 +206,7 @@ def call_gemini(image_bytes: Optional[bytes], format_str: Optional[str], text_pr
                 response_mime_type="application/json",
                 system_instruction="You are a helpful AI product reviewer. Always output valid JSON matching the exact requested JSON schema. Be concise and direct.",
                 temperature=0.1,
-                max_output_tokens=2000,
+                max_output_tokens=8000,
             )
         )
         output_text = response.text.strip()
