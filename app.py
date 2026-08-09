@@ -245,11 +245,214 @@ For review_authenticity, analyze each review in the reviews array and classify e
                     model=model,
                     contents=content_list,
                     config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        system_instruction="You are a helpful AI product reviewer. Always output valid JSON. Be concise.",
-                        temperature=0.1,
-                        max_output_tokens=3000,
-                    )
+    response_mime_type="application/json",
+    response_schema={
+        "type": "object",
+        "properties": {
+            "product_name": {
+                "type": "string"
+            },
+            "category": {
+                "type": "string"
+            },
+            "specific_answer": {
+                "type": "string"
+            },
+            "build_and_features": {
+                "type": "object",
+                "properties": {
+                    "build_quality": {"type": "string"},
+                    "materials": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                    },
+                    "special_details": {"type": "string"}
+                },
+                "required": [
+                    "build_quality",
+                    "materials",
+                    "special_details"
+                ]
+            },
+            "key_features": {
+                "type": "array",
+                "items": {"type": "string"}
+            },
+            "pros": {
+                "type": "array",
+                "items": {"type": "string"}
+            },
+            "cons": {
+                "type": "array",
+                "items": {"type": "string"}
+            },
+            "rating": {
+                "type": "number"
+            },
+            "worth_buying": {
+                "type": "boolean"
+            },
+            "average_price": {
+                "type": "number"
+            },
+            "reviews": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "user": {"type": "string"},
+                        "platform": {"type": "string"},
+                        "text": {"type": "string"},
+                        "rating": {"type": "number"}
+                    },
+                    "required": [
+                        "user",
+                        "platform",
+                        "text",
+                        "rating"
+                    ]
+                }
+            },
+            "platforms": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "trust_score": {"type": "number"},
+                        "price": {"type": "number"}
+                    },
+                    "required": [
+                        "name",
+                        "trust_score",
+                        "price"
+                    ]
+                }
+            },
+            "price_history": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "date": {"type": "string"},
+                        "price": {"type": "number"}
+                    },
+                    "required": [
+                        "date",
+                        "price"
+                    ]
+                }
+            },
+            "frequently_bought_together": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "reason": {"type": "string"}
+                    },
+                    "required": [
+                        "name",
+                        "reason"
+                    ]
+                }
+            },
+            "better_alternatives": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "brand": {"type": "string"},
+                        "brand_domain": {"type": "string"},
+                        "price": {"type": "number"},
+                        "url": {"type": "string"},
+                        "reason": {"type": "string"}
+                    },
+                    "required": [
+                        "name",
+                        "brand",
+                        "brand_domain",
+                        "price",
+                        "url",
+                        "reason"
+                    ]
+                }
+            },
+            "review_authenticity": {
+                "type": "object",
+                "properties": {
+                    "genuine_count": {"type": "integer"},
+                    "fake_count": {"type": "integer"},
+                    "confidence_score": {"type": "number"},
+                    "summary": {"type": "string"},
+                    "key_signals": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                    },
+                    "per_review": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "user": {"type": "string"},
+                                "platform": {"type": "string"},
+                                "verdict": {"type": "string"},
+                                "text": {"type": "string"},
+                                "reason": {"type": "string"}
+                            },
+                            "required": [
+                                "user",
+                                "platform",
+                                "verdict",
+                                "text",
+                                "reason"
+                            ]
+                        }
+                    }
+                },
+                "required": [
+                    "genuine_count",
+                    "fake_count",
+                    "confidence_score",
+                    "summary",
+                    "key_signals",
+                    "per_review"
+                ]
+            },
+            "is_new_product": {
+                "type": "boolean"
+            }
+        },
+        "required": [
+            "product_name",
+            "category",
+            "specific_answer",
+            "build_and_features",
+            "key_features",
+            "pros",
+            "cons",
+            "rating",
+            "worth_buying",
+            "average_price",
+            "reviews",
+            "platforms",
+            "price_history",
+            "frequently_bought_together",
+            "better_alternatives",
+            "review_authenticity",
+            "is_new_product"
+        ]
+    },
+    system_instruction=(
+        "You are a helpful AI product reviewer. "
+        "Use the provided product image as the primary source of truth. "
+        "Return only the requested structured data. "
+        "Be accurate and concise."
+    ),
+    temperature=0.1,
+    max_output_tokens=8000,
+)
                 )
                 text = response.text.strip()
                 if text.startswith("```json"): text = text[7:]
